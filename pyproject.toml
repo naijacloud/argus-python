@@ -1,0 +1,148 @@
+# Hatchling because it needs no setup.py and no runtime shim, and because the
+# version is read straight out of the package: a wheel whose metadata disagrees
+# with the `sdk.version` on the wire is a support ticket nobody can reproduce.
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "naijacloud-argus"
+dynamic = ["version"]
+description = "Official Python SDK for Naijacloud Argus: errors, logs, metrics, traces, cron check-ins and feature flags."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+authors = [{ name = "Naija Cloud", email = "support@naijacloud.com" }]
+maintainers = [{ name = "Naija Cloud", email = "support@naijacloud.com" }]
+keywords = [
+  "naijacloud",
+  "argus",
+  "error tracking",
+  "monitoring",
+  "logging",
+  "tracing",
+  "opentelemetry",
+  "sentry",
+  "django",
+  "flask",
+  "fastapi",
+]
+
+# No runtime dependencies, deliberately. This package loads first in every
+# process it watches and hooks excepthooks, logging and http.client; each
+# third-party import would be another supply chain inside all of them, and
+# another version pin to clash with the app's own. The transport is urllib and
+# threading from the standard library.
+dependencies = []
+
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Framework :: Django",
+  "Framework :: FastAPI",
+  "Framework :: Flask",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: Implementation :: CPython",
+  "Topic :: System :: Logging",
+  "Topic :: System :: Monitoring",
+  "Topic :: Software Development :: Bug Tracking",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://www.naijacloud.com/argus"
+Documentation = "https://github.com/naijacloud/argus-python#readme"
+Source = "https://github.com/naijacloud/argus-python"
+Changelog = "https://github.com/naijacloud/argus-python/blob/main/CHANGELOG.md"
+Issues = "https://github.com/naijacloud/argus-python/issues"
+
+[project.optional-dependencies]
+# Test and lint tooling only. The suite itself runs on the standard library, so
+# `python -m unittest discover -s tests` works with none of this installed.
+dev = ["pytest>=7", "mypy>=1.5", "ruff>=0.4"]
+# The framework tests skip themselves unless these are installed.
+frameworks = ["flask>=2.2", "django>=4.2", "fastapi>=0.100"]
+
+[tool.hatch.version]
+path = "src/naijacloud_argus/_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/naijacloud_argus"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "/src",
+  "/tests",
+  "/examples",
+  "/scripts",
+  "/README.md",
+  "/LICENSE",
+  "/CHANGELOG.md",
+  "/CONTRIBUTING.md",
+  "/SECURITY.md",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "S"]
+ignore = [
+  # `assert` in tests is the point of tests.
+  "S101",
+  # The SDK supports 3.9, so `dict[str, str]`, `X | Y` and `X | None`
+  # annotations, `typing` deprecations and f-string rewrites that pyupgrade
+  # suggests for newer interpreters do not apply here.
+  "UP006",
+  "UP007",
+  "UP035",
+  "UP045",
+  "UP032",
+  # Errors are swallowed on purpose: the SDK must never raise into the app
+  # (spec section 6). Every bare `except Exception: pass` is that rule.
+  "S110",
+  "S112",
+  # Jitter and sampling, not cryptography.
+  "S311",
+  # urllib.request.Request on a URL built from the DSN; the scheme is checked
+  # to be http(s) when the DSN is parsed.
+  "S310",
+]
+
+[tool.ruff.lint.isort]
+combine-as-imports = true
+
+[tool.ruff.lint.per-file-ignores]
+# The test suite deliberately binds sockets, runs subprocesses and asserts.
+# The contract script puts src/ on sys.path before importing the package.
+"tests/*" = ["S", "E501", "B", "E402"]
+"examples/*" = ["S", "T201"]
+"scripts/*" = ["S", "T201"]
+
+[tool.mypy]
+# No python_version pin: recent mypy refuses to target 3.9 at all, and 3.9
+# compatibility is what the CI test matrix is for. Type checking runs against
+# whichever interpreter CI installs.
+strict = true
+files = ["src/naijacloud_argus"]
+warn_unused_ignores = false
+
+[[tool.mypy.overrides]]
+# The framework integrations import these lazily and only when used.
+module = ["flask.*", "django.*", "asgiref.*", "starlette.*", "fastapi.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# test_hooks raises in a thread on purpose, to test threading.excepthook.
+filterwarnings = ["ignore::pytest.PytestUnhandledThreadExceptionWarning"]

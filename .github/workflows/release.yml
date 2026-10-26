@@ -1,0 +1,123 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+# A re-run or a force-pushed tag must not race a second upload against the
+# first. Never cancel in progress: PyPI will not take the same version twice,
+# so a half-finished run is finished by hand, not by a second one.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # The same matrix that guards main. A tag that would not have passed CI does
+  # not get published.
+  verify:
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # The tag, `__version__` and the changelog must agree. A wheel whose
+      # version disagrees with the sdk.version it sends is a support ticket
+      # nobody can reproduce, and PyPI never lets a version be uploaded twice.
+      - name: Check the tag against the package
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="$(python -c 'import re,pathlib; print(re.search(r"__version__ = \"([^\"]+)\"", pathlib.Path("src/naijacloud_argus/_version.py").read_text()).group(1))')"
+          if [ "$TAG" != "v$version" ]; then
+            echo "::error::Tag $TAG does not match src/naijacloud_argus/_version.py ($version). Delete the tag, fix the version, tag again."
+            exit 1
+          fi
+          case "$version" in
+            *[a-z]*) ;; # a pre-release (0.3.0rc1) needs no changelog section
+            *) grep -q "^## \[$version\]" CHANGELOG.md || {
+                 echo "::error::CHANGELOG.md has no '## [$version]' heading. Move the Unreleased entries under it."
+                 exit 1
+               } ;;
+          esac
+
+      - name: Build the sdist and wheel
+        run: python -m pip install --upgrade pip build twine && python -m build
+
+      - name: Check the distribution
+        run: |
+          twine check --strict dist/*
+          python -c "import zipfile,glob,sys; names=zipfile.ZipFile(glob.glob('dist/*.whl')[0]).namelist(); sys.exit(0 if 'naijacloud_argus/py.typed' in names else 'py.typed missing from the wheel')"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+
+    # PyPI's trusted publisher is bound to this environment name. Somewhere to
+    # hang a required reviewer, too: an upload cannot be taken back.
+    environment:
+      name: pypi
+      url: https://pypi.org/project/naijacloud-argus/
+
+    permissions:
+      # Trusted publishing. PyPI exchanges this run's OIDC token for an upload
+      # credential that lives for minutes, so there is no PyPI token in this
+      # repository to leak or rotate. The action also uploads a PEP 740
+      # attestation tying each file to this workflow run.
+      id-token: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+  github-release:
+    # PyPI first, then the release: the other order announces a version that
+    # cannot be installed yet.
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Create the GitHub release from the changelog
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="${TAG#v}"
+          awk -v v="$version" '
+            index($0, "## [" v "]") == 1 { on = 1; next }
+            on && /^## / { exit }
+            on && !/^\[[^]]+\]: / { print }
+          ' CHANGELOG.md > notes.md
+          [ -s notes.md ] || echo "See CHANGELOG.md." > notes.md
+          flags=()
+          case "$version" in *[a-z]*) flags+=(--prerelease) ;; esac
+          gh release create "$TAG" --title "$TAG" --notes-file notes.md "${flags[@]}" dist/*
